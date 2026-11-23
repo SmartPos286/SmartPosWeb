@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record for authenticated Google administrator accounts.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "createdAt", "updatedAt"]
+    },
+    "WorkspaceProfile": {
+      "title": "WorkspaceProfile",
+      "description": "Non-PII store cloud metadata and synchronization status for a workspace.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeName": { "type": "string", "maxLength": 120 },
+        "storeRif": { "type": "string", "maxLength": 40 },
+        "bcvRate": { "type": "number" },
+        "licenseType": { "type": "string", "enum": ["FREE_TRIAL", "STANDARD", "PRO_LIFETIME"] },
+        "productsCount": { "type": "number" },
+        "salesCount": { "type": "number" },
+        "customersCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerId",
+        "storeName",
+        "storeRif",
+        "bcvRate",
+        "licenseType",
+        "productsCount",
+        "salesCount",
+        "customersCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CloudBackup": {
+      "title": "CloudBackup",
+      "description": "Structured SmartPOS286 store backup stored under the authenticated owner's workspace.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "label": { "type": "string", "maxLength": 100 },
+        "storeName": { "type": "string", "maxLength": 120 },
+        "storeRif": { "type": "string", "maxLength": 40 },
+        "productsCount": { "type": "number" },
+        "salesCount": { "type": "number" },
+        "customersCount": { "type": "number" },
+        "settings": { "type": "object" },
+        "products": { "type": "array" },
+        "customers": { "type": "array" },
+        "suppliers": { "type": "array" },
+        "sales": { "type": "array" },
+        "saleItems": { "type": "array" },
+        "quotes": { "type": "array" },
+        "quoteItems": { "type": "array" },
+        "deliveryNotes": { "type": "array" },
+        "deliveryNoteItems": { "type": "array" },
+        "expenses": { "type": "array" },
+        "casheaSettlements": { "type": "array" },
+        "posTerminalRecords": { "type": "array" },
+        "purchaseInvoices": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerId",
+        "label",
+        "storeName",
+        "storeRif",
+        "productsCount",
+        "salesCount",
+        "customersCount",
+        "settings",
+        "products",
+        "customers",
+        "suppliers",
+        "sales",
+        "saleItems",
+        "quotes",
+        "quoteItems",
+        "deliveryNotes",
+        "deliveryNoteItems",
+        "expenses",
+        "casheaSettlements",
+        "posTerminalRecords",
+        "purchaseInvoices",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Private PII profile for the authenticated Google user (owner or bootstrapped admin only)."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/WorkspaceProfile" },
+      "description": "Cloud workspace metadata keyed by owner UID."
+    },
+    "/workspaces/{workspaceId}/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/CloudBackup" },
+      "description": "Structured POS snapshot backups owned by the workspace owner."
+    }
+  }
+}

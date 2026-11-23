@@ -1,0 +1,6 @@
+{
+  "name": "SmartPOS286",
+  "description": "SmartPOS286: Plataforma integral de facturación e inteligencia artificial para comercios multimoneda.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

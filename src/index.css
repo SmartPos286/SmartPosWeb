@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+    --app-bg: #a0cef5;
+    --app-surface: #ffffff;
+    --app-surface-variant: #bae6fd;
+    --app-primary: #0284c7;
+    --app-primary-container: #bae6fd;
+    --app-secondary: #4f46e5;
+    --app-on-bg: #0f172a;
+    --app-on-surface: #0f172a;
+    --app-muted: #475569;
+    --app-outline: #7dd3fc;
+    --app-error: #dc2626;
+    --app-success: #059669;
+  }
+
+  .dark {
+    --app-bg: #17284a;
+    --app-surface: #1e2d48;
+    --app-surface-variant: #283a5a;
+    --app-primary: #6366f1;
+    --app-primary-container: #4338ca;
+    --app-secondary: #38bdf8;
+    --app-on-bg: #f8fafc;
+    --app-on-surface: #f1f5f9;
+    --app-muted: #94a3b8;
+    --app-outline: #334155;
+    --app-error: #ef4444;
+    --app-success: #10b981;
+  }
+
+  html,
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--app-bg);
+    color: var(--app-on-bg);
+    min-height: 100%;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
+}
+
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only-container {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+}

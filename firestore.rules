@@ -1,0 +1,230 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'ryd858501@gmail.com'
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidMapList(listVal, maxLen) {
+      return listVal is list &&
+        listVal.size() <= maxLen &&
+        (listVal.size() == 0 || listVal[0] is map);
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() <= 128 && data.uid == userId &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.displayName is string && data.displayName.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceProfile(data, workspaceId) {
+      return data.keys().hasAll([
+          'ownerId', 'storeName', 'storeRif', 'bcvRate', 'licenseType',
+          'productsCount', 'salesCount', 'customersCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId', 'storeName', 'storeRif', 'bcvRate', 'licenseType',
+          'productsCount', 'salesCount', 'customersCount', 'createdAt', 'updatedAt'
+        ]) &&
+        data.ownerId is string && data.ownerId.size() <= 128 && data.ownerId == workspaceId &&
+        data.storeName is string && data.storeName.size() >= 1 && data.storeName.size() <= 120 &&
+        data.storeRif is string && data.storeRif.size() <= 40 &&
+        data.bcvRate is number && data.bcvRate > 0 &&
+        data.licenseType in ['FREE_TRIAL', 'STANDARD', 'PRO_LIFETIME'] &&
+        data.productsCount is int && data.productsCount >= 0 &&
+        data.salesCount is int && data.salesCount >= 0 &&
+        data.customersCount is int && data.customersCount >= 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCloudBackup(data, workspaceId) {
+      return data.keys().hasAll([
+          'ownerId', 'label', 'storeName', 'storeRif',
+          'productsCount', 'salesCount', 'customersCount',
+          'settings', 'products', 'customers', 'suppliers',
+          'sales', 'saleItems', 'quotes', 'quoteItems',
+          'deliveryNotes', 'deliveryNoteItems', 'expenses',
+          'casheaSettlements', 'posTerminalRecords', 'purchaseInvoices',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId', 'label', 'storeName', 'storeRif',
+          'productsCount', 'salesCount', 'customersCount',
+          'settings', 'products', 'customers', 'suppliers',
+          'sales', 'saleItems', 'quotes', 'quoteItems',
+          'deliveryNotes', 'deliveryNoteItems', 'expenses',
+          'casheaSettlements', 'posTerminalRecords', 'purchaseInvoices',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.ownerId is string && data.ownerId.size() <= 128 && data.ownerId == workspaceId &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 100 &&
+        data.storeName is string && data.storeName.size() >= 1 && data.storeName.size() <= 120 &&
+        data.storeRif is string && data.storeRif.size() <= 40 &&
+        data.productsCount is int && data.productsCount >= 0 &&
+        data.salesCount is int && data.salesCount >= 0 &&
+        data.customersCount is int && data.customersCount >= 0 &&
+        data.settings is map &&
+        isValidMapList(data.products, 500) &&
+        isValidMapList(data.customers, 500) &&
+        isValidMapList(data.suppliers, 200) &&
+        isValidMapList(data.sales, 500) &&
+        isValidMapList(data.saleItems, 1500) &&
+        isValidMapList(data.quotes, 300) &&
+        isValidMapList(data.quoteItems, 1000) &&
+        isValidMapList(data.deliveryNotes, 300) &&
+        isValidMapList(data.deliveryNoteItems, 1000) &&
+        isValidMapList(data.expenses, 500) &&
+        isValidMapList(data.casheaSettlements, 300) &&
+        isValidMapList(data.posTerminalRecords, 500) &&
+        isValidMapList(data.purchaseInvoices, 500) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- Connection Probe Document ---
+    match /test/connection {
+      allow get: if isSignedIn();
+      allow list, write: if false;
+    }
+
+    // --- Admin Registry ---
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && isOwner(adminId);
+      allow list, write: if false;
+    }
+
+    // --- Isolated User PII ---
+    match /users/{userId}/private/info {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserPrivateInfo(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserPrivateInfo(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // --- Workspace Profile ---
+    match /workspaces/{workspaceId} {
+      allow get: if isValidId(workspaceId) && (isOwner(workspaceId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(workspaceId) &&
+        isOwner(workspaceId) &&
+        isValidWorkspaceProfile(incoming(), workspaceId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(workspaceId) &&
+        (isOwner(workspaceId) || isAdmin()) &&
+        isValidWorkspaceProfile(incoming(), workspaceId) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly([
+          'storeName', 'storeRif', 'bcvRate', 'licenseType',
+          'productsCount', 'salesCount', 'customersCount', 'updatedAt'
+        ]));
+      allow delete: if isVerifiedUser() && isValidId(workspaceId) && isAdmin();
+
+      // --- Cloud Backups (Master Gate: Parent Workspace Ownership) ---
+      match /backups/{backupId} {
+        allow get: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(backupId) &&
+          (
+            isAdmin() ||
+            (
+              exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+              get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid
+            )
+          );
+        allow list: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          (resource.data.ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(backupId) &&
+          isOwner(workspaceId) &&
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid &&
+          isValidCloudBackup(incoming(), workspaceId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(backupId) &&
+          (isOwner(workspaceId) || isAdmin()) &&
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == workspaceId &&
+          isValidCloudBackup(incoming(), workspaceId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly([
+            'label', 'storeName', 'storeRif',
+            'productsCount', 'salesCount', 'customersCount',
+            'settings', 'products', 'customers', 'suppliers',
+            'sales', 'saleItems', 'quotes', 'quoteItems',
+            'deliveryNotes', 'deliveryNoteItems', 'expenses',
+            'casheaSettlements', 'posTerminalRecords', 'purchaseInvoices',
+            'updatedAt'
+          ]));
+        allow delete: if isVerifiedUser() &&
+          isValidId(workspaceId) &&
+          isValidId(backupId) &&
+          (isOwner(workspaceId) || isAdmin());
+      }
+    }
+  }
+}
