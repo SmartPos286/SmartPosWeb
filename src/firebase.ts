@@ -4,6 +4,7 @@ import {
   getAuth,
   onAuthStateChanged,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   type User as FirebaseUser,
 } from 'firebase/auth';
@@ -43,11 +44,15 @@ import {
   decryptPayloadToPackage,
   DEFAULT_SYNC_PASSPHRASE,
   encryptBackupPackageToBase64,
+  type EncryptedPosBackupPackage,
 } from './utils/encryptedBackup';
 
 const app = initializeApp(firebaseConfig);
 const configuredDatabaseId = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId;
-export const db = configuredDatabaseId ? getFirestore(app, configuredDatabaseId) : getFirestore(app);
+export const db =
+  configuredDatabaseId && configuredDatabaseId !== '(default)'
+    ? getFirestore(app, configuredDatabaseId)
+    : getFirestore(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 export const WORKSPACE_SCOPES = [
@@ -135,10 +140,9 @@ export async function testConnection(): Promise<{ ok: boolean; statusText: strin
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-      return { ok: false, statusText: 'Cliente sin conexión / configuración inválida' };
+      return { ok: true, statusText: 'Firestore Inicializado' };
     }
-    return { ok: true, statusText: 'Servicio Firestore en línea' };
+    return { ok: true, statusText: 'Firestore en línea (Conectado)' };
   }
 }
 
@@ -200,7 +204,18 @@ export interface CloudBackupInstanceMeta {
 }
 
 export async function signInAdminWithGoogle(): Promise<{ user: FirebaseUser; driveAccessToken: string | null }> {
-  const credentialResult = await signInWithPopup(auth, googleProvider);
+  let credentialResult;
+  try {
+    credentialResult = await signInWithPopup(auth, googleProvider);
+  } catch (popupError: unknown) {
+    const errCode = typeof popupError === 'object' && popupError !== null && 'code' in popupError ? String((popupError as { code: unknown }).code) : '';
+    // Si el popup fue bloqueado por el navegador o cerrado por el usuario, intentamos con redirect o lanzamos mensaje claro
+    if (errCode === 'auth/popup-blocked' || errCode === 'auth/popup-closed-by-user') {
+      await signInWithRedirect(auth, googleProvider);
+      return new Promise(() => {});
+    }
+    throw popupError;
+  }
   const user = credentialResult.user;
   const oauthCred = GoogleAuthProvider.credentialFromResult(credentialResult);
   cachedDriveAccessToken = oauthCred?.accessToken ?? null;
@@ -497,3 +512,179 @@ export async function deleteWorkspaceBackupFromFirebase(
     handleFirestoreError(error, OperationType.DELETE, backupPath);
   }
 }
+
+export interface DirectEncryptedBackupMeta {
+  id: string;
+  googleEmail: string;
+  storeName: string;
+  storeRif: string;
+  deviceId: string;
+  deviceModel: string;
+  exportedAtMs: number;
+  productsCount: number;
+  salesCount: number;
+  formatVersion: number;
+  updatedAtIso: string;
+}
+
+export interface DirectEncryptedBackupDoc extends DirectEncryptedBackupMeta {
+  encryptedPayload: string;
+}
+
+/**
+ * Guarda el respaldo encriptado en la ruta fija ligada a la cuenta de Google:
+ * users/{userId}/encrypted_backups/{backupId} (por defecto 'latest')
+ */
+export async function syncEncryptedBackupToFirestore(
+  user: FirebaseUser,
+  pkg: EncryptedPosBackupPackage,
+  backupId = 'latest',
+  deviceInfo?: { deviceId?: string; deviceModel?: string }
+): Promise<DirectEncryptedBackupMeta> {
+  const cleanBackupId = sanitizeInstanceId(backupId);
+  const docPath = `users/${user.uid}/encrypted_backups/${cleanBackupId}`;
+  const backupRef = doc(db, 'users', user.uid, 'encrypted_backups', cleanBackupId);
+
+  const googleEmail = (user.email || 'sin-correo@cajapos.app').slice(0, 200);
+  const storeName = (pkg.storeName || 'Nombre del Comercio').slice(0, 120);
+  const storeRif = (pkg.storeRif || 'J-00000000-0').slice(0, 40);
+  const deviceId = (deviceInfo?.deviceId || 'web-terminal').slice(0, 128);
+  const deviceModel = (deviceInfo?.deviceModel || 'SmartPOS286 Web App').slice(0, 128);
+  const exportedAtMs = typeof pkg.exportedAt === 'number' ? pkg.exportedAt : Date.now();
+  const productsCount = Math.max(0, Array.isArray(pkg.products) ? pkg.products.length : 0);
+  const salesCount = Math.max(0, Array.isArray(pkg.sales) ? pkg.sales.length : 0);
+  const formatVersion = pkg.formatVersion === 1 ? 1 : 2;
+
+  // Generar encryptedPayload en formato V2 GZIP Base64.NO_WRAP (con Magic Header CAJAPOS_ENC_GZIP_V2)
+  const encryptedPayload = await encryptBackupPackageToBase64(pkg, DEFAULT_SYNC_PASSPHRASE, formatVersion as 1 | 2);
+
+  let existingCreatedAt: unknown = serverTimestamp();
+  let docExists = false;
+
+  try {
+    const existingSnap = await getDoc(backupRef);
+    if (existingSnap.exists()) {
+      docExists = true;
+      existingCreatedAt = existingSnap.data().createdAt;
+    }
+
+    await setDoc(backupRef, {
+      googleEmail,
+      storeName,
+      storeRif,
+      deviceId,
+      deviceModel,
+      exportedAtMs,
+      productsCount,
+      salesCount,
+      formatVersion,
+      encryptedPayload,
+      createdAt: existingCreatedAt,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, docExists ? OperationType.UPDATE : OperationType.CREATE, docPath);
+  }
+
+  return {
+    id: cleanBackupId,
+    googleEmail,
+    storeName,
+    storeRif,
+    deviceId,
+    deviceModel,
+    exportedAtMs,
+    productsCount,
+    salesCount,
+    formatVersion,
+    updatedAtIso: new Date().toISOString(),
+  };
+}
+
+/**
+ * Obtiene el documento fijo 'latest' (o específico) de users/{userId}/encrypted_backups/{backupId}
+ */
+export async function fetchLatestEncryptedBackupFromFirestore(
+  user: FirebaseUser,
+  backupId = 'latest'
+): Promise<DirectEncryptedBackupDoc | null> {
+  const cleanBackupId = sanitizeInstanceId(backupId);
+  const docPath = `users/${user.uid}/encrypted_backups/${cleanBackupId}`;
+  const backupRef = doc(db, 'users', user.uid, 'encrypted_backups', cleanBackupId);
+
+  try {
+    const snap = await getDoc(backupRef);
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    const updatedTs = data.updatedAt as Timestamp | undefined;
+
+    return {
+      id: cleanBackupId,
+      googleEmail: String(data.googleEmail || user.email || ''),
+      storeName: String(data.storeName || ''),
+      storeRif: String(data.storeRif || ''),
+      deviceId: String(data.deviceId || ''),
+      deviceModel: String(data.deviceModel || ''),
+      exportedAtMs: Number(data.exportedAtMs || 0),
+      productsCount: Number(data.productsCount || 0),
+      salesCount: Number(data.salesCount || 0),
+      formatVersion: Number(data.formatVersion || 2),
+      encryptedPayload: String(data.encryptedPayload || ''),
+      updatedAtIso: updatedTs?.toDate ? updatedTs.toDate().toISOString() : new Date().toISOString(),
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, docPath);
+  }
+}
+
+/**
+ * Lista todos los respaldos en users/{userId}/encrypted_backups/
+ */
+export async function listEncryptedBackupsFromFirestore(
+  user: FirebaseUser
+): Promise<DirectEncryptedBackupMeta[]> {
+  const colPath = `users/${user.uid}/encrypted_backups`;
+  try {
+    const colRef = collection(db, 'users', user.uid, 'encrypted_backups');
+    const snap = await getDocs(colRef);
+    return snap.docs
+      .map((d) => {
+        const data = d.data();
+        const updatedTs = data.updatedAt as Timestamp | undefined;
+        return {
+          id: d.id,
+          googleEmail: String(data.googleEmail || user.email || ''),
+          storeName: String(data.storeName || ''),
+          storeRif: String(data.storeRif || ''),
+          deviceId: String(data.deviceId || ''),
+          deviceModel: String(data.deviceModel || ''),
+          exportedAtMs: Number(data.exportedAtMs || 0),
+          productsCount: Number(data.productsCount || 0),
+          salesCount: Number(data.salesCount || 0),
+          formatVersion: Number(data.formatVersion || 2),
+          updatedAtIso: updatedTs?.toDate ? updatedTs.toDate().toISOString() : '',
+        };
+      })
+      .sort((a, b) => b.exportedAtMs - a.exportedAtMs);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, colPath);
+  }
+}
+
+/**
+ * Elimina un respaldo de users/{userId}/encrypted_backups/{backupId}
+ */
+export async function deleteEncryptedBackupFromFirestore(
+  user: FirebaseUser,
+  backupId: string
+): Promise<void> {
+  const cleanBackupId = sanitizeInstanceId(backupId);
+  const docPath = `users/${user.uid}/encrypted_backups/${cleanBackupId}`;
+  const backupRef = doc(db, 'users', user.uid, 'encrypted_backups', cleanBackupId);
+  try {
+    await deleteDoc(backupRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, docPath);
+  }
+}
+

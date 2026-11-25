@@ -56,6 +56,31 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidEncryptedCloudBackup(data) {
+      return data.keys().hasAll([
+          'googleEmail', 'storeName', 'storeRif', 'deviceId', 'deviceModel',
+          'exportedAtMs', 'productsCount', 'salesCount', 'formatVersion',
+          'encryptedPayload'
+        ]) &&
+        data.keys().hasOnly([
+          'googleEmail', 'storeName', 'storeRif', 'deviceId', 'deviceModel',
+          'exportedAtMs', 'productsCount', 'salesCount', 'formatVersion',
+          'encryptedPayload', 'createdAt', 'updatedAt'
+        ]) &&
+        data.googleEmail is string && data.googleEmail.size() <= 200 &&
+        data.storeName is string && data.storeName.size() >= 1 && data.storeName.size() <= 120 &&
+        data.storeRif is string && data.storeRif.size() <= 40 &&
+        data.deviceId is string && data.deviceId.size() >= 1 && data.deviceId.size() <= 128 &&
+        data.deviceModel is string && data.deviceModel.size() >= 1 && data.deviceModel.size() <= 128 &&
+        data.exportedAtMs is number &&
+        data.productsCount is int && data.productsCount >= 0 &&
+        data.salesCount is int && data.salesCount >= 0 &&
+        data.formatVersion in [1, 2] &&
+        data.encryptedPayload is string && data.encryptedPayload.size() >= 1 && data.encryptedPayload.size() <= 1048576 &&
+        (!('createdAt' in data) || data.createdAt is timestamp) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
     function isValidWorkspaceProfile(data, workspaceId) {
       return data.keys().hasAll([
           'ownerId', 'storeName', 'storeRif', 'bcvRate', 'licenseType',
@@ -150,6 +175,32 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt']);
       allow delete: if false;
+    }
+
+    // --- Direct Cloud Encrypted Backups (users/{userId}/encrypted_backups/{backupId}) ---
+    match /users/{userId}/encrypted_backups/{backupId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && isValidId(backupId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerifiedUser() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidId(backupId) &&
+        isOwner(userId) &&
+        isValidEncryptedCloudBackup(incoming()) &&
+        (!('createdAt' in incoming()) || incoming().createdAt == request.time) &&
+        (!('updatedAt' in incoming()) || incoming().updatedAt == request.time);
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidId(backupId) &&
+        (isOwner(userId) || isAdmin()) &&
+        isValidEncryptedCloudBackup(incoming()) &&
+        (!('createdAt' in incoming()) || !('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
+        (!('updatedAt' in incoming()) || incoming().updatedAt == request.time) &&
+        (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly([
+          'googleEmail', 'storeName', 'storeRif', 'deviceId', 'deviceModel',
+          'exportedAtMs', 'productsCount', 'salesCount', 'formatVersion',
+          'encryptedPayload', 'createdAt', 'updatedAt'
+        ]));
+      allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(backupId) && (isOwner(userId) || isAdmin());
     }
 
     // --- Workspace Profile ---

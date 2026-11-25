@@ -50,18 +50,24 @@ import { isSuperUser, resolveAllowedRoutes } from '../utils/permissions';
 import {
   auth,
   clearCachedDriveAccessToken,
+  deleteEncryptedBackupFromFirestore,
   deleteWorkspaceBackupFromFirebase,
+  fetchLatestEncryptedBackupFromFirestore,
   fetchWorkspaceSummaryFromFirebase,
   getCachedDriveAccessToken,
+  listEncryptedBackupsFromFirestore,
   listWorkspaceBackupsFromFirebase,
   onAuthStateChanged,
   restoreWorkspaceFromFirebase,
   signInAdminWithGoogle,
   signOutGoogleAccount,
+  syncEncryptedBackupToFirestore,
   syncWorkspaceToFirebase,
   testConnection,
   type CloudBackupInstanceMeta,
   type CloudWorkspaceSummary,
+  type DirectEncryptedBackupDoc,
+  type DirectEncryptedBackupMeta,
   type FirebaseUser,
 } from '../firebase';
 import {
@@ -322,6 +328,11 @@ interface PosContextValue {
   backupToFirebase: (instanceId?: string, label?: string) => Promise<boolean>;
   restoreFromFirebase: (instanceId?: string) => Promise<boolean>;
   deleteFirebaseInstance: (instanceId: string) => Promise<boolean>;
+  latestEncryptedBackupMeta: DirectEncryptedBackupDoc | null;
+  encryptedBackupList: DirectEncryptedBackupMeta[];
+  refreshEncryptedBackups: () => Promise<void>;
+  syncLatestEncryptedBackupToFirestore: (instanceId?: string) => Promise<boolean>;
+  restoreLatestEncryptedBackupFromFirestore: (backupId?: string) => Promise<boolean>;
   syncCajaPosToDriveNow: (silent?: boolean) => Promise<boolean>;
   restoreCajaPosFromDrive: () => Promise<boolean>;
   refreshDriveFileMeta: () => Promise<void>;
@@ -379,6 +390,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [firebaseStatusText, setFirebaseStatusText] = useState('Verificando Firebase...');
   const [cloudSummary, setCloudSummary] = useState<CloudWorkspaceSummary | null>(null);
   const [cloudInstances, setCloudInstances] = useState<CloudBackupInstanceMeta[]>([]);
+  const [latestEncryptedBackupMeta, setLatestEncryptedBackupMeta] = useState<DirectEncryptedBackupDoc | null>(null);
+  const [encryptedBackupList, setEncryptedBackupList] = useState<DirectEncryptedBackupMeta[]>([]);
   const [hasDriveToken, setHasDriveToken] = useState(false);
   const [driveRealtimeEnabled, setDriveRealtimeEnabledState] = useState(false);
   const [driveSyncStatus, setDriveSyncStatus] = useState<'IDLE' | 'SYNCING' | 'OK' | 'ERROR'>('IDLE');
@@ -406,6 +419,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setDriveSyncStatus('IDLE');
         setCloudSummary(null);
         setCloudInstances([]);
+        setLatestEncryptedBackupMeta(null);
+        setEncryptedBackupList([]);
+      } else {
+        void fetchLatestEncryptedBackupFromFirestore(user, 'latest')
+          .then((latestDoc) => {
+            if (latestDoc) setLatestEncryptedBackupMeta(latestDoc);
+          })
+          .catch(() => null);
+        void listEncryptedBackupsFromFirestore(user)
+          .then((list) => {
+            setEncryptedBackupList(list);
+          })
+          .catch(() => null);
       }
     });
     void testConnection().then((res) => {
@@ -1836,12 +1862,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const { user, driveAccessToken } = await signInAdminWithGoogle();
       setFirebaseUser(user);
       setHasDriveToken(Boolean(driveAccessToken));
-      const [summary, instances] = await Promise.all([
+      const [summary, instances, latestEncDoc, encList] = await Promise.all([
         fetchWorkspaceSummaryFromFirebase(user).catch(() => null),
         listWorkspaceBackupsFromFirebase(user).catch(() => []),
+        fetchLatestEncryptedBackupFromFirestore(user, 'latest').catch(() => null),
+        listEncryptedBackupsFromFirestore(user).catch(() => []),
       ]);
       setCloudSummary(summary);
       setCloudInstances(instances);
+      setLatestEncryptedBackupMeta(latestEncDoc);
+      setEncryptedBackupList(encList);
       if (driveAccessToken) {
         const meta = await findHiddenCajaPosFile(driveAccessToken).catch(() => null);
         setDriveFileMeta(meta);
@@ -1874,8 +1904,123 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDriveSyncStatus('IDLE');
     setCloudSummary(null);
     setCloudInstances([]);
+    setLatestEncryptedBackupMeta(null);
+    setEncryptedBackupList([]);
     notify('Google Desconectado', 'Se cerró la sesión de la cuenta Google en Firebase y Drive.', 'info');
   }, [currentUser?.role, notify]);
+
+  const refreshEncryptedBackups = useCallback(async () => {
+    if (!firebaseUser) return;
+    try {
+      const [latestDoc, list] = await Promise.all([
+        fetchLatestEncryptedBackupFromFirestore(firebaseUser, 'latest').catch(() => null),
+        listEncryptedBackupsFromFirestore(firebaseUser).catch(() => []),
+      ]);
+      setLatestEncryptedBackupMeta(latestDoc);
+      setEncryptedBackupList(list);
+    } catch {
+      // silent refresh
+    }
+  }, [firebaseUser]);
+
+  const syncLatestEncryptedBackupToFirestore = useCallback(
+    async (instanceId = 'latest') => {
+      if (currentUser?.role !== 'ADMIN') {
+        notify('Acceso Restringido', 'Solo el Administrador puede respaldar en Firestore.', 'warning');
+        return false;
+      }
+      if (!firebaseUser) {
+        notify('Inicia Sesión con Google', 'Conecta tu cuenta Google para respaldar en Firestore.', 'warning');
+        return false;
+      }
+      setIsFirebaseSyncing(true);
+      try {
+        const pkg = buildEncryptedPosBackupPackage(state, 2);
+        const meta = await syncEncryptedBackupToFirestore(
+          firebaseUser,
+          pkg,
+          instanceId,
+          {
+            deviceId: 'web-caja-' + (state.settings.cashRegisterNumber || '1'),
+            deviceModel: 'SmartPOS286 Web App',
+          }
+        );
+        const latestDoc = await fetchLatestEncryptedBackupFromFirestore(firebaseUser, instanceId);
+        setLatestEncryptedBackupMeta(latestDoc);
+        const encList = await listEncryptedBackupsFromFirestore(firebaseUser).catch(() => []);
+        setEncryptedBackupList(encList);
+        notify(
+          'Respaldo en Nube Guardado',
+          `Documento users/${firebaseUser.uid}/encrypted_backups/${meta.id} guardado con éxito (${meta.productsCount} productos, ${meta.salesCount} ventas).`,
+          'success'
+        );
+        return true;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Error al guardar en users/.../encrypted_backups/';
+        notify('Error al Respaldar en Firestore', msg, 'error');
+        return false;
+      } finally {
+        setIsFirebaseSyncing(false);
+      }
+    },
+    [currentUser?.role, firebaseUser, notify, state]
+  );
+
+  const restoreLatestEncryptedBackupFromFirestore = useCallback(
+    async (backupId = 'latest') => {
+      if (currentUser?.role !== 'ADMIN') {
+        notify('Acceso Restringido', 'Solo el Administrador puede restaurar desde Firestore.', 'warning');
+        return false;
+      }
+      if (!firebaseUser) {
+        notify('Inicia Sesión con Google', 'Conecta tu cuenta Google para acceder a tus respaldos.', 'warning');
+        return false;
+      }
+      setIsFirebaseSyncing(true);
+      try {
+        const docSnap = await fetchLatestEncryptedBackupFromFirestore(firebaseUser, backupId);
+        if (!docSnap || !docSnap.encryptedPayload) {
+          notify(
+            'Sin Respaldo en la Nube',
+            `No se encontró el documento users/${firebaseUser.uid}/encrypted_backups/${backupId} para esta cuenta.`,
+            'info'
+          );
+          return false;
+        }
+
+        const pkg = await decryptPayloadToPackage(docSnap.encryptedPayload, DEFAULT_SYNC_PASSPHRASE);
+        const restored = restoreEncryptedPosBackupPackage(pkg, state.settings);
+
+        setState((prev) => {
+          let usersToKeep = restored.users.length > 0 ? restored.users : prev.users;
+          if (!usersToKeep.some((u) => isSuperUser(u))) {
+            usersToKeep = [MASTER_SUPERUSER, ...usersToKeep];
+          }
+          return {
+            ...prev,
+            ...restored,
+            users: usersToKeep,
+            currentUserId: prev.currentUserId,
+          };
+        });
+
+        setLatestEncryptedBackupMeta(docSnap);
+        notify(
+          'Respaldo Restaurado desde Firestore',
+          `Documento "${backupId}" sincronizado (${pkg.products.length} productos, ${pkg.sales.length} ventas). Tienda: ${pkg.storeName || state.settings.storeName}`,
+          'success'
+        );
+        return true;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Error al descifrar o restaurar respaldo.';
+        notify('Error de Restauración', msg, 'error');
+        return false;
+      } finally {
+        setIsFirebaseSyncing(false);
+      }
+    },
+    [currentUser?.role, firebaseUser, notify, state.settings]
+  );
 
   const backupToFirebase = useCallback(
     async (instanceId = 'latest', label = 'Instancia Principal') => {
@@ -1889,6 +2034,23 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       setIsFirebaseSyncing(true);
       try {
+        // 1. Guardar en la ubicación fija de la cuenta: users/{userId}/encrypted_backups/{instanceId}
+        const pkg = buildEncryptedPosBackupPackage(state, 2);
+        await syncEncryptedBackupToFirestore(
+          firebaseUser,
+          pkg,
+          instanceId,
+          {
+            deviceId: 'web-caja-' + (state.settings.cashRegisterNumber || '1'),
+            deviceModel: 'SmartPOS286 Web Terminal',
+          }
+        );
+        const latestDoc = await fetchLatestEncryptedBackupFromFirestore(firebaseUser, instanceId);
+        setLatestEncryptedBackupMeta(latestDoc);
+        const encList = await listEncryptedBackupsFromFirestore(firebaseUser).catch(() => []);
+        setEncryptedBackupList(encList);
+
+        // 2. Guardar en workspaces/{userId}/backups/{instanceId} para retrocompatibilidad
         const summary = await syncWorkspaceToFirebase(
           firebaseUser,
           {
@@ -1909,13 +2071,18 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           },
           instanceId,
           label
-        );
-        setCloudSummary(summary);
+        ).catch(() => null);
+        if (summary) setCloudSummary(summary);
         const list = await listWorkspaceBackupsFromFirebase(firebaseUser).catch(() => []);
         setCloudInstances(list);
+
         setFirebaseConnected(true);
         setFirebaseStatusText('Sincronizado con Firestore');
-        notify('Instancia Guardada en Nube', `Respaldo "${label}" sincronizado en Firestore.`, 'success');
+        notify(
+          'Instancia Guardada en Nube',
+          `users/${firebaseUser.uid}/encrypted_backups/${instanceId} actualizado con éxito.`,
+          'success'
+        );
         return true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'Error al guardar en Firestore.';
@@ -1940,6 +2107,33 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       setIsFirebaseSyncing(true);
       try {
+        // Prioridad 1: users/{userId}/encrypted_backups/{instanceId}
+        const docSnap = await fetchLatestEncryptedBackupFromFirestore(firebaseUser, instanceId);
+        if (docSnap && docSnap.encryptedPayload) {
+          const pkg = await decryptPayloadToPackage(docSnap.encryptedPayload, DEFAULT_SYNC_PASSPHRASE);
+          const restored = restoreEncryptedPosBackupPackage(pkg, state.settings);
+          setState((prev) => {
+            let usersToKeep = restored.users.length > 0 ? restored.users : prev.users;
+            if (!usersToKeep.some((u) => isSuperUser(u))) {
+              usersToKeep = [MASTER_SUPERUSER, ...usersToKeep];
+            }
+            return {
+              ...prev,
+              ...restored,
+              users: usersToKeep,
+              currentUserId: prev.currentUserId,
+            };
+          });
+          setLatestEncryptedBackupMeta(docSnap);
+          notify(
+            'Respaldo Restaurado desde Firestore',
+            `Documento users/${firebaseUser.uid}/encrypted_backups/${docSnap.id} restaurado (${pkg.products.length} productos, ${pkg.sales.length} ventas).`,
+            'success'
+          );
+          return true;
+        }
+
+        // Prioridad 2: workspaces/{userId}/backups/{instanceId} (fallback)
         const restored = await restoreWorkspaceFromFirebase(firebaseUser, instanceId);
         if (!restored) {
           notify('Sin Respaldo en la Nube', 'No se encontró esa instancia guardada para esta cuenta Google.', 'info');
@@ -1974,7 +2168,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsFirebaseSyncing(false);
       }
     },
-    [currentUser?.role, firebaseUser, notify]
+    [currentUser?.role, firebaseUser, notify, state.settings]
   );
 
   const deleteFirebaseInstance = useCallback(
@@ -1982,9 +2176,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (currentUser?.role !== 'ADMIN' || !firebaseUser) return false;
       setIsFirebaseSyncing(true);
       try {
-        await deleteWorkspaceBackupFromFirebase(firebaseUser, instanceId);
-        const list = await listWorkspaceBackupsFromFirebase(firebaseUser).catch(() => []);
+        await Promise.all([
+          deleteWorkspaceBackupFromFirebase(firebaseUser, instanceId).catch(() => null),
+          deleteEncryptedBackupFromFirestore(firebaseUser, instanceId).catch(() => null),
+        ]);
+        const [list, encList] = await Promise.all([
+          listWorkspaceBackupsFromFirebase(firebaseUser).catch(() => []),
+          listEncryptedBackupsFromFirestore(firebaseUser).catch(() => []),
+        ]);
         setCloudInstances(list);
+        setEncryptedBackupList(encList);
+        if (latestEncryptedBackupMeta?.id === instanceId) {
+          setLatestEncryptedBackupMeta(null);
+        }
         notify('Instancia Eliminada', `Se eliminó la instancia "${instanceId}" de Firestore.`, 'info');
         return true;
       } catch (error) {
@@ -1995,7 +2199,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsFirebaseSyncing(false);
       }
     },
-    [currentUser?.role, firebaseUser, notify]
+    [currentUser?.role, firebaseUser, latestEncryptedBackupMeta?.id, notify]
   );
 
   const sendAssistantMessage = useCallback(
@@ -2332,6 +2536,11 @@ Top productos con menor stock: ${lowStockProducts
     backupToFirebase,
     restoreFromFirebase,
     deleteFirebaseInstance,
+    latestEncryptedBackupMeta,
+    encryptedBackupList,
+    refreshEncryptedBackups,
+    syncLatestEncryptedBackupToFirestore,
+    restoreLatestEncryptedBackupFromFirestore,
     syncCajaPosToDriveNow,
     restoreCajaPosFromDrive,
     refreshDriveFileMeta,

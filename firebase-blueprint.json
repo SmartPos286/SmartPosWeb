@@ -97,12 +97,47 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "EncryptedBackup": {
+      "title": "EncryptedBackup",
+      "description": "AES-256-GCM encrypted backup document linked directly to the user Google account.",
+      "type": "object",
+      "properties": {
+        "googleEmail": { "type": "string", "maxLength": 200 },
+        "storeName": { "type": "string", "maxLength": 120 },
+        "storeRif": { "type": "string", "maxLength": 40 },
+        "deviceId": { "type": "string", "maxLength": 128 },
+        "deviceModel": { "type": "string", "maxLength": 128 },
+        "exportedAtMs": { "type": "number" },
+        "productsCount": { "type": "number" },
+        "salesCount": { "type": "number" },
+        "formatVersion": { "type": "number" },
+        "encryptedPayload": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "googleEmail",
+        "storeName",
+        "storeRif",
+        "deviceId",
+        "deviceModel",
+        "exportedAtMs",
+        "productsCount",
+        "salesCount",
+        "formatVersion",
+        "encryptedPayload"
+      ]
     }
   },
   "firestore": {
     "/users/{userId}/private/info": {
       "schema": { "$ref": "#/entities/UserPrivateInfo" },
       "description": "Private PII profile for the authenticated Google user (owner or bootstrapped admin only)."
+    },
+    "/users/{userId}/encrypted_backups/{backupId}": {
+      "schema": { "$ref": "#/entities/EncryptedBackup" },
+      "description": "Direct user encrypted backup document (e.g. latest) synced across all devices."
     },
     "/workspaces/{workspaceId}": {
       "schema": { "$ref": "#/entities/WorkspaceProfile" },
