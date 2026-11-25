@@ -68,6 +68,7 @@
         "casheaSettlements": { "type": "array" },
         "posTerminalRecords": { "type": "array" },
         "purchaseInvoices": { "type": "array" },
+        "encryptedPayload": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

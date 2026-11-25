@@ -64,7 +64,17 @@ import {
   type CloudWorkspaceSummary,
   type FirebaseUser,
 } from '../firebase';
-import { decryptBackupPayload, encryptBackupPayload } from '../utils/encryptedBackup';
+import {
+  BACKUP_HEADER_V1,
+  BACKUP_HEADER_V2,
+  DEFAULT_SYNC_PASSPHRASE,
+  buildEncryptedPosBackupPackage,
+  decryptPayloadToPackage,
+  encryptJsonToBinary,
+  restoreEncryptedPosBackupPackage,
+  uint8ArrayToBase64,
+  type EncryptedPosBackupPackage,
+} from '../utils/encryptedBackup';
 import {
   findHiddenCajaPosFile,
   readHiddenCajaPosFile,
@@ -284,8 +294,9 @@ interface PosContextValue {
   // Backup (JSON, Encrypted JSON, SQL)
   exportBackupJson: () => string;
   importBackupJson: (jsonText: string) => { ok: boolean; error?: string };
-  exportEncryptedBackup: (passphrase: string) => Promise<string>;
-  importEncryptedBackup: (encryptedText: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>;
+  exportEncryptedBackup: (passphrase?: string, formatVersion?: 1 | 2) => Promise<string>;
+  exportEncryptedBackupBinary: (passphrase?: string, formatVersion?: 1 | 2) => Promise<Uint8Array>;
+  importEncryptedBackup: (encryptedInput: string | Uint8Array, passphrase?: string) => Promise<{ ok: boolean; error?: string }>;
   exportSqlBackup: () => string;
   importSqlBackup: (sqlText: string) => { ok: boolean; error?: string };
   wipeAppData: () => void;
@@ -1458,11 +1469,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const exportBackupJson = useCallback(() => {
+    const pkg = buildEncryptedPosBackupPackage(state, 1);
     return JSON.stringify(
       {
         app: 'SmartPOS286',
         version: '2.5.0',
-        exportedAt: new Date().toISOString(),
+        ...pkg,
         data: state,
       },
       null,
@@ -1474,43 +1486,91 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (jsonText: string) => {
       try {
         const parsed = JSON.parse(jsonText);
-        const data = (parsed.data ?? parsed) as Partial<PersistedState>;
-        if (!Array.isArray(data.products) || !Array.isArray(data.users)) {
-          return { ok: false, error: 'El archivo JSON no corresponde a un respaldo válido de SmartPOS286.' };
+        const data = (parsed.data ?? parsed) as Partial<PersistedState & EncryptedPosBackupPackage>;
+        if (!Array.isArray(data.products)) {
+          return { ok: false, error: 'El archivo JSON no corresponde a un respaldo válido de SmartPOS286 / CajaPOS.' };
         }
-        setState((prev) => ({
-          ...prev,
-          ...data,
-          settings: { ...prev.settings, ...(data.settings ?? {}) },
-          currentUserId: prev.currentUserId,
-        }));
+        const restored = restoreEncryptedPosBackupPackage(data, state.settings);
+        setState((prev) => {
+          let usersToKeep = Array.isArray(data.users) && data.users.length > 0 ? (data.users as User[]) : prev.users;
+          if (!usersToKeep.some((u) => isSuperUser(u))) {
+            usersToKeep = [MASTER_SUPERUSER, ...usersToKeep];
+          }
+          return {
+            ...prev,
+            ...restored,
+            users: usersToKeep,
+            currentUserId: prev.currentUserId,
+          };
+        });
         notify('Respaldo Restaurado', 'Todos los datos del comercio fueron importados con éxito.', 'success');
         return { ok: true };
       } catch {
         return { ok: false, error: 'Error al leer el archivo JSON de respaldo.' };
       }
     },
-    [notify]
+    [notify, state.settings]
   );
 
   const exportEncryptedBackup = useCallback(
-    async (passphrase: string) => {
-      return encryptBackupPayload(exportBackupJson(), passphrase);
+    async (passphrase?: string, formatVersion: 1 | 2 = 1) => {
+      const pkg = buildEncryptedPosBackupPackage(state, formatVersion);
+      const binary = await encryptJsonToBinary(
+        JSON.stringify(pkg),
+        passphrase || DEFAULT_SYNC_PASSPHRASE,
+        formatVersion
+      );
+      return uint8ArrayToBase64(binary);
     },
-    [exportBackupJson]
+    [state]
+  );
+
+  const exportEncryptedBackupBinary = useCallback(
+    async (passphrase?: string, formatVersion: 1 | 2 = 1) => {
+      const pkg = buildEncryptedPosBackupPackage(state, formatVersion);
+      return encryptJsonToBinary(
+        JSON.stringify(pkg),
+        passphrase || DEFAULT_SYNC_PASSPHRASE,
+        formatVersion
+      );
+    },
+    [state]
   );
 
   const importEncryptedBackup = useCallback(
-    async (encryptedText: string, passphrase: string) => {
+    async (encryptedInput: string | Uint8Array, passphrase?: string) => {
       try {
-        const decryptedJson = await decryptBackupPayload(encryptedText, passphrase);
-        return importBackupJson(decryptedJson);
+        const pkg = await decryptPayloadToPackage(
+          encryptedInput,
+          passphrase || DEFAULT_SYNC_PASSPHRASE
+        );
+        const restored = restoreEncryptedPosBackupPackage(pkg, state.settings);
+
+        setState((prev) => {
+          let usersToKeep = restored.users.length > 0 ? restored.users : prev.users;
+          if (!usersToKeep.some((u) => isSuperUser(u))) {
+            usersToKeep = [MASTER_SUPERUSER, ...usersToKeep];
+          }
+          return {
+            ...prev,
+            ...restored,
+            users: usersToKeep,
+            currentUserId: prev.currentUserId,
+          };
+        });
+
+        notify(
+          'Respaldo Encriptado Restaurado',
+          `Paquete (${pkg.formatVersion === 2 ? 'V2 GZIP' : 'V1 JSON'}) sincronizado con éxito. Tienda: ${pkg.storeName || state.settings.storeName}`,
+          'success'
+        );
+        return { ok: true };
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'No se pudo descifrar el respaldo.';
         return { ok: false, error: msg };
       }
     },
-    [importBackupJson]
+    [notify, state.settings]
   );
 
   const exportSqlBackup = useCallback(() => {
@@ -2247,6 +2307,7 @@ Top productos con menor stock: ${lowStockProducts
     exportBackupJson,
     importBackupJson,
     exportEncryptedBackup,
+    exportEncryptedBackupBinary,
     importEncryptedBackup,
     exportSqlBackup,
     importSqlBackup,

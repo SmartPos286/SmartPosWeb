@@ -23,7 +23,8 @@ import {
 } from 'lucide-react';
 import { usePos } from '../context/PosContext';
 import { FIREBASE_PROJECT_INFO, sanitizeInstanceId } from '../firebase';
-import { downloadTextFile } from '../utils/csvInventory';
+import { downloadBinaryFile, downloadTextFile } from '../utils/csvInventory';
+import { DEFAULT_SYNC_PASSPHRASE } from '../utils/encryptedBackup';
 import { exportModuleTablePdf } from '../utils/pdfExport';
 
 type ConfirmModalState =
@@ -39,7 +40,10 @@ type ConfirmModalState =
 type PassphraseModalState =
   | {
       mode: 'EXPORT' | 'IMPORT';
+      fileBytes?: Uint8Array;
       fileText?: string;
+      fileName?: string;
+      exportFormat?: 1 | 2;
     }
   | null;
 
@@ -57,6 +61,7 @@ export const SettingsScreen: React.FC = () => {
     exportBackupJson,
     importBackupJson,
     exportEncryptedBackup,
+    exportEncryptedBackupBinary,
     importEncryptedBackup,
     exportSqlBackup,
     importSqlBackup,
@@ -176,10 +181,11 @@ export const SettingsScreen: React.FC = () => {
   const handleImportEncryptedFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
     e.target.value = '';
     setPassphraseInput('');
-    setPassphraseModal({ mode: 'IMPORT', fileText: text });
+    setPassphraseModal({ mode: 'IMPORT', fileBytes: bytes, fileName: file.name });
   };
 
   const handleImportSqlFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -202,22 +208,31 @@ export const SettingsScreen: React.FC = () => {
   const handleSubmitPassphrase = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!passphraseModal) return;
-    if (passphraseInput.trim().length < 4) {
-      notify('Clave Corta', 'Ingresa una contraseña de al menos 4 caracteres.', 'warning');
+    if (passphraseInput.trim().length > 0 && passphraseInput.trim().length < 4) {
+      notify('Clave Corta', 'Si usas contraseña personalizada, ingresa al menos 4 caracteres.', 'warning');
       return;
     }
     setIsProcessingModal(true);
     try {
       if (passphraseModal.mode === 'EXPORT') {
-        const encrypted = await exportEncryptedBackup(passphraseInput);
-        downloadTextFile(
-          `respaldo_encriptado_smartpos286_${Date.now()}.sp286enc.json`,
-          encrypted,
-          'application/json;charset=utf-8;'
+        const formatVersion = passphraseModal.exportFormat || 1;
+        const binaryBytes = await exportEncryptedBackupBinary(
+          passphraseInput.trim() || undefined,
+          formatVersion
         );
-        notify('Respaldo Encriptado Descargado', 'Archivo protegido con AES-GCM-256 generado.', 'success');
-      } else if (passphraseModal.fileText) {
-        const res = await importEncryptedBackup(passphraseModal.fileText, passphraseInput);
+        const ext = formatVersion === 2 ? 'cajapos.enc' : 'sp286enc';
+        downloadBinaryFile(
+          `respaldo_cajapos_${formatVersion === 2 ? 'v2_gzip' : 'v1'}_${Date.now()}.${ext}`,
+          binaryBytes
+        );
+        notify(
+          'Respaldo Encriptado Generado',
+          `Archivo binario ${formatVersion === 2 ? 'V2 (GZIP)' : 'V1 (JSON)'} AES-256-GCM + PBKDF2 descargado (interoperable con Android).`,
+          'success'
+        );
+      } else if (passphraseModal.fileBytes || passphraseModal.fileText) {
+        const inputData = passphraseModal.fileBytes || passphraseModal.fileText || '';
+        const res = await importEncryptedBackup(inputData, passphraseInput.trim() || undefined);
         if (!res.ok && res.error) {
           notify('Error al Descifrar', res.error, 'error');
           return;
@@ -518,17 +533,35 @@ export const SettingsScreen: React.FC = () => {
               type="button"
               onClick={() => {
                 setPassphraseInput('');
-                setPassphraseModal({ mode: 'EXPORT' });
+                setPassphraseModal({ mode: 'EXPORT', exportFormat: 1 });
               }}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 font-bold text-white"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 font-bold text-white hover:bg-indigo-700"
+              title="Formato V1: JSON UTF-8 directo con AES-256-GCM + PBKDF2"
             >
               <Lock className="h-3.5 w-3.5" />
-              JSON Encriptado
+              Encriptado V1 (Local)
             </button>
-            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-indigo-400/50 px-3 py-2 font-bold text-indigo-600 dark:text-indigo-300">
+            <button
+              type="button"
+              onClick={() => {
+                setPassphraseInput('');
+                setPassphraseModal({ mode: 'EXPORT', exportFormat: 2 });
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-purple-600 px-3 py-2 font-bold text-white hover:bg-purple-700"
+              title="Formato V2: GZIP comprimido con AES-256-GCM + PBKDF2 (Android/Nube)"
+            >
+              <Lock className="h-3.5 w-3.5" />
+              Encriptado V2 (GZIP/Android)
+            </button>
+            <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-indigo-400/50 px-3 py-2 font-bold text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/30">
               <Upload className="h-3.5 w-3.5" />
               Restaurar Encriptado
-              <input type="file" accept=".json,.sp286enc" className="hidden" onChange={handleImportEncryptedFile} />
+              <input
+                type="file"
+                accept=".cajapos.enc,.sp286enc,.enc,.json,.b64,*"
+                className="hidden"
+                onChange={handleImportEncryptedFile}
+              />
             </label>
           </div>
         </div>
@@ -820,7 +853,11 @@ export const SettingsScreen: React.FC = () => {
               </div>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-slate-500 dark:text-slate-400">Token Drive en sesión:</span>
-                <span className={`font-bold ${hasDriveToken ? 'text-emerald-500' : 'text-amber-500'}`}>
+                <span
+                  className={`inline-block w-[200.578px] rounded px-2 py-0.5 text-center font-bold bg-[#1f0303] ${
+                    hasDriveToken ? 'text-emerald-500' : 'text-amber-500'
+                  }`}
+                >
                   {hasDriveToken ? 'Autorizado (en memoria)' : 'Inicia sesión Google para autorizar'}
                 </span>
               </div>
@@ -984,7 +1021,7 @@ export const SettingsScreen: React.FC = () => {
         </div>
       )}
 
-      {/* Passphrase Modal for Encrypted JSON */}
+      {/* Passphrase Modal for Encrypted Backup */}
       {passphraseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
           <form
@@ -993,26 +1030,86 @@ export const SettingsScreen: React.FC = () => {
           >
             <div className="flex items-center gap-2">
               <Lock className="h-5 w-5 text-indigo-500" />
-              <h4 className="text-sm font-extrabold">
-                {passphraseModal.mode === 'EXPORT'
-                  ? 'Cifrar Respaldo JSON (AES-GCM-256)'
-                  : 'Descifrar Respaldo JSON Encriptado'}
-              </h4>
+              <div>
+                <h4 className="text-sm font-extrabold">
+                  {passphraseModal.mode === 'EXPORT'
+                    ? `Cifrar Respaldo Binario (AES-256-GCM)`
+                    : 'Descifrar Respaldo Encriptado (AES-256-GCM)'}
+                </h4>
+                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                  {passphraseModal.mode === 'EXPORT'
+                    ? passphraseModal.exportFormat === 2
+                      ? 'Encabezado: CAJAPOS_ENC_GZIP_V2 (GZIP + AAD)'
+                      : 'Encabezado: CAJAPOS_ENC_JSON_V1 (Directo + AAD)'
+                    : `Archivo: ${passphraseModal.fileName || 'respaldo'}`}
+                </span>
+              </div>
             </div>
+
+            {passphraseModal.mode === 'EXPORT' && (
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPassphraseModal((prev) => (prev ? { ...prev, exportFormat: 1 } : null))}
+                  className={`flex-1 rounded-xl border p-2 text-left text-xs font-bold transition-all ${
+                    (passphraseModal.exportFormat || 1) === 1
+                      ? 'border-indigo-500 bg-indigo-50/80 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                      : 'border-slate-300 dark:border-slate-600'
+                  }`}
+                >
+                  <div>V1: JSON Local</div>
+                  <div className="text-[10px] font-normal text-slate-500">UTF-8 directo sin compresión</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPassphraseModal((prev) => (prev ? { ...prev, exportFormat: 2 } : null))}
+                  className={`flex-1 rounded-xl border p-2 text-left text-xs font-bold transition-all ${
+                    passphraseModal.exportFormat === 2
+                      ? 'border-purple-500 bg-purple-50/80 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300'
+                      : 'border-slate-300 dark:border-slate-600'
+                  }`}
+                >
+                  <div>V2: GZIP Nube / Android</div>
+                  <div className="text-[10px] font-normal text-slate-500">Comprimido para sincronización</div>
+                </button>
+              </div>
+            )}
+
             <p className="text-xs text-slate-600 dark:text-slate-300">
               {passphraseModal.mode === 'EXPORT'
-                ? 'Define una contraseña segura para proteger tu archivo. Sin ella no podrá restaurarse.'
-                : 'Ingresa la contraseña con la que fue cifrado este respaldo.'}
+                ? 'Introduce una contraseña personalizada o déjalo vacío para usar la Clave Maestra de Sincronización Automática con la app de Android.'
+                : 'Ingresa la contraseña personalizada o déjalo en blanco para usar la Clave Maestra de Sincronización Automática.'}
             </p>
-            <input
-              type="password"
-              required
-              autoFocus
-              value={passphraseInput}
-              onChange={(e) => setPassphraseInput(e.target.value)}
-              placeholder="Contraseña de cifrado (mín. 4 caracteres)"
-              className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-xs dark:border-slate-600 dark:bg-slate-900"
-            />
+
+            <div className="space-y-1.5">
+              <input
+                type="password"
+                autoFocus
+                value={passphraseInput}
+                onChange={(e) => setPassphraseInput(e.target.value)}
+                placeholder="Contraseña (opcional: vacío = Clave Maestra Sync)"
+                className="w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-xs dark:border-slate-600 dark:bg-slate-900"
+              />
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setPassphraseInput(DEFAULT_SYNC_PASSPHRASE)}
+                  className="text-[10px] font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
+                >
+                  Usar Clave Maestra Android
+                </button>
+                {passphraseInput && (
+                  <button
+                    type="button"
+                    onClick={() => setPassphraseInput('')}
+                    className="text-[10px] text-slate-400 hover:text-slate-600"
+                  >
+                    Limpiar
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="flex justify-end gap-2 text-xs">
               <button
                 type="button"
@@ -1030,7 +1127,7 @@ export const SettingsScreen: React.FC = () => {
                 {isProcessingModal
                   ? 'Procesando...'
                   : passphraseModal.mode === 'EXPORT'
-                    ? 'Cifrar y Descargar'
+                    ? `Generar y Descargar ${passphraseModal.exportFormat === 2 ? 'V2' : 'V1'}`
                     : 'Descifrar y Restaurar'}
               </button>
             </div>

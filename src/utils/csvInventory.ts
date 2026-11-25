@@ -215,3 +215,16 @@ export function downloadTextFile(filename: string, content: string, mimeType = '
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
 }
+
+export function downloadBinaryFile(filename: string, bytes: Uint8Array, mimeType = 'application/octet-stream') {
+  const blob = new Blob([bytes as any], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+

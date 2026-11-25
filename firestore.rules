@@ -81,10 +81,6 @@ service cloud.firestore {
       return data.keys().hasAll([
           'ownerId', 'label', 'storeName', 'storeRif',
           'productsCount', 'salesCount', 'customersCount',
-          'settings', 'products', 'customers', 'suppliers',
-          'sales', 'saleItems', 'quotes', 'quoteItems',
-          'deliveryNotes', 'deliveryNoteItems', 'expenses',
-          'casheaSettlements', 'posTerminalRecords', 'purchaseInvoices',
           'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
@@ -94,6 +90,7 @@ service cloud.firestore {
           'sales', 'saleItems', 'quotes', 'quoteItems',
           'deliveryNotes', 'deliveryNoteItems', 'expenses',
           'casheaSettlements', 'posTerminalRecords', 'purchaseInvoices',
+          'encryptedPayload',
           'createdAt', 'updatedAt'
         ]) &&
         data.ownerId is string && data.ownerId.size() <= 128 && data.ownerId == workspaceId &&
@@ -103,20 +100,21 @@ service cloud.firestore {
         data.productsCount is int && data.productsCount >= 0 &&
         data.salesCount is int && data.salesCount >= 0 &&
         data.customersCount is int && data.customersCount >= 0 &&
-        data.settings is map &&
-        isValidMapList(data.products, 500) &&
-        isValidMapList(data.customers, 500) &&
-        isValidMapList(data.suppliers, 200) &&
-        isValidMapList(data.sales, 500) &&
-        isValidMapList(data.saleItems, 1500) &&
-        isValidMapList(data.quotes, 300) &&
-        isValidMapList(data.quoteItems, 1000) &&
-        isValidMapList(data.deliveryNotes, 300) &&
-        isValidMapList(data.deliveryNoteItems, 1000) &&
-        isValidMapList(data.expenses, 500) &&
-        isValidMapList(data.casheaSettlements, 300) &&
-        isValidMapList(data.posTerminalRecords, 500) &&
-        isValidMapList(data.purchaseInvoices, 500) &&
+        (!('settings' in data) || data.settings is map) &&
+        (!('encryptedPayload' in data) || (data.encryptedPayload is string && data.encryptedPayload.size() <= 1048576)) &&
+        (!('products' in data) || isValidMapList(data.products, 500)) &&
+        (!('customers' in data) || isValidMapList(data.customers, 500)) &&
+        (!('suppliers' in data) || isValidMapList(data.suppliers, 200)) &&
+        (!('sales' in data) || isValidMapList(data.sales, 500)) &&
+        (!('saleItems' in data) || isValidMapList(data.saleItems, 1500)) &&
+        (!('quotes' in data) || isValidMapList(data.quotes, 300)) &&
+        (!('quoteItems' in data) || isValidMapList(data.quoteItems, 1000)) &&
+        (!('deliveryNotes' in data) || isValidMapList(data.deliveryNotes, 300)) &&
+        (!('deliveryNoteItems' in data) || isValidMapList(data.deliveryNoteItems, 1000)) &&
+        (!('expenses' in data) || isValidMapList(data.expenses, 500)) &&
+        (!('casheaSettlements' in data) || isValidMapList(data.casheaSettlements, 300)) &&
+        (!('posTerminalRecords' in data) || isValidMapList(data.posTerminalRecords, 500)) &&
+        (!('purchaseInvoices' in data) || isValidMapList(data.purchaseInvoices, 500)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -218,6 +216,7 @@ service cloud.firestore {
             'sales', 'saleItems', 'quotes', 'quoteItems',
             'deliveryNotes', 'deliveryNoteItems', 'expenses',
             'casheaSettlements', 'posTerminalRecords', 'purchaseInvoices',
+            'encryptedPayload',
             'updatedAt'
           ]));
         allow delete: if isVerifiedUser() &&

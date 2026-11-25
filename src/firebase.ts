@@ -38,6 +38,12 @@ import type {
   StoreSettings,
   Supplier,
 } from './types/models';
+import {
+  buildEncryptedPosBackupPackage,
+  decryptPayloadToPackage,
+  DEFAULT_SYNC_PASSPHRASE,
+  encryptBackupPackageToBase64,
+} from './utils/encryptedBackup';
 
 const app = initializeApp(firebaseConfig);
 const configuredDatabaseId = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId;
@@ -328,6 +334,34 @@ export async function syncWorkspaceToFirebase(
     storeLogoDataUrl: '',
   });
 
+  // Generar encryptedPayload compatible con Android (formatVersion = 2, GZIP, Base64.NO_WRAP)
+  let encryptedPayload = '';
+  try {
+    const pkg = buildEncryptedPosBackupPackage(
+      {
+        settings: cleanSettings,
+        products: payload.products,
+        customers: payload.customers,
+        sales: payload.sales,
+        saleItems: payload.saleItems,
+        suppliers: payload.suppliers,
+        purchaseInvoices: payload.purchaseInvoices,
+        deliveryNotes: payload.deliveryNotes,
+        deliveryNoteItems: payload.deliveryNoteItems,
+        expenses: payload.expenses,
+        users: [],
+        quotes: payload.quotes,
+        quoteItems: payload.quoteItems,
+        casheaSettlements: payload.casheaSettlements,
+        posTerminalRecords: payload.posTerminalRecords,
+      },
+      2
+    );
+    encryptedPayload = await encryptBackupPackageToBase64(pkg, DEFAULT_SYNC_PASSPHRASE, 2);
+  } catch (encErr) {
+    console.warn('No se pudo generar encryptedPayload para Firestore:', encErr);
+  }
+
   try {
     const existingBackup = await getDoc(backupRef);
     if (existingBackup.exists()) {
@@ -356,6 +390,7 @@ export async function syncWorkspaceToFirebase(
       casheaSettlements: sanitizeForFirestore(payload.casheaSettlements.slice(0, 300)),
       posTerminalRecords: sanitizeForFirestore(payload.posTerminalRecords.slice(0, 500)),
       purchaseInvoices: sanitizeForFirestore(payload.purchaseInvoices.slice(0, 500)),
+      ...(encryptedPayload ? { encryptedPayload } : {}),
       createdAt: backupCreatedAt,
       updatedAt: serverTimestamp(),
     });
@@ -386,6 +421,40 @@ export async function restoreWorkspaceFromFirebase(
     const snap = await getDoc(backupRef);
     if (!snap.exists()) return null;
     const data = snap.data();
+
+    // Si viene encryptedPayload (formato V2 GZIP en Base64.NO_WRAP de Android o web)
+    if (typeof data.encryptedPayload === 'string' && data.encryptedPayload.trim().length > 0) {
+      try {
+        const pkg = await decryptPayloadToPackage(data.encryptedPayload, DEFAULT_SYNC_PASSPHRASE);
+        return {
+          settings: {
+            ...((data.settings as StoreSettings) || {}),
+            storeName: pkg.storeName || data.storeName || '',
+            storeRif: pkg.storeRif || data.storeRif || '',
+            storePhone: pkg.storePhone || '',
+            storeAddress: pkg.storeAddress || '',
+            bcvRate: pkg.bcvRate || Number(data.bcvRate) || 1,
+            companyRegistered: Boolean(pkg.isCompanyRegistered),
+          } as StoreSettings,
+          products: (pkg.products as Product[]) || [],
+          customers: (pkg.customers as Customer[]) || [],
+          suppliers: (pkg.suppliers as Supplier[]) || [],
+          sales: (pkg.sales as Sale[]) || [],
+          saleItems: (pkg.saleItems as SaleItem[]) || [],
+          quotes: (pkg.quotes as Quote[]) || [],
+          quoteItems: (pkg.quoteItems as QuoteItem[]) || [],
+          deliveryNotes: (pkg.deliveryNotes as DeliveryNote[]) || [],
+          deliveryNoteItems: (pkg.deliveryNoteItems as DeliveryNoteItem[]) || [],
+          expenses: (pkg.expenses as Expense[]) || [],
+          casheaSettlements: (pkg.casheaSettlements as CasheaSettlement[]) || [],
+          posTerminalRecords: (pkg.posTerminalRecords as PosTerminalRecord[]) || [],
+          purchaseInvoices: (pkg.purchaseInvoices as PurchaseInvoice[]) || [],
+        };
+      } catch (err) {
+        console.warn('No se pudo descifrar encryptedPayload de Firestore, usando campos desglosados:', err);
+      }
+    }
+
     return {
       settings: data.settings as StoreSettings | undefined,
       products: Array.isArray(data.products) ? (data.products as Product[]) : undefined,
